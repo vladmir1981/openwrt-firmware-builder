@@ -4,16 +4,16 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Версия OpenWrt (например: 23.05.5 или snapshot)'
+        description: 'Версия OpenWrt (например: 23.05.5, 25.12.5 или snapshot)'
         required: true
       target:
-        description: 'Архитектура (например: ramips)'
+        description: 'Архитектура (например: mediatek)'
         required: true
       subtarget:
-        description: 'Чипсет (например: mt7621)'
+        description: 'Чипсет (например: filogic)'
         required: true
       profile:
-        description: 'Профиль роутера (например: mercusys-mr70x-v1)'
+        description: 'Профиль роутера (например: glinet_gl-mt6000)'
         required: true
       packages:
         description: 'Пакеты через пробел'
@@ -48,7 +48,7 @@ jobs:
           t = os.environ.get("INPUT_TARGET", "").strip()
           s = os.environ.get("INPUT_SUBTARGET", "").strip()
 
-          is_snapshot = v.upper() == "SNAPSHOT"
+          is_snapshot = v.lower() == "snapshot"
           
           if is_snapshot:
               base_url = f"https://downloads.openwrt.org/snapshots/targets/{t}/{s}"
@@ -56,13 +56,13 @@ jobs:
               base_url = f"https://downloads.openwrt.org/releases/{v}/targets/{t}/{s}"
 
           print(f"[Инфо] Сканируем директорию: {base_url}")
-          
           try:
               sha256_url = f"{base_url}/sha256sums"
-              with urllib.request.urlopen(sha256_url) as response:
+              req = urllib.request.Request(sha256_url, headers={'User-Agent': 'Mozilla/5.0'})
+              with urllib.request.urlopen(req) as response:
                   lines = response.read().decode('utf-8').splitlines()
           except Exception as e:
-              print(f"Критическая ошибка: Не удалось получить индекс файлов по адресу {sha256_url}. Ошибка: {e}", file=sys.stderr)
+              print(f"Ошибка получения индекса: {e}", file=sys.stderr)
               sys.exit(1)
 
           ib_filename = None
@@ -72,22 +72,48 @@ jobs:
                   break
 
           if not ib_filename:
-              print("Критическая ошибка: Файл Image Builder не найден в манифесте!", file=sys.stderr)
+              print("Критическая ошибка: Image Builder не найден в манифесте релиза!", file=sys.stderr)
               sys.exit(1)
 
-          download_url = f"{base_url}/{ib_filename}"
-          print(f"[Успех] Найдено точное имя файла: {ib_filename}")
+          print(f"[Успех] Скачиваем: {ib_filename}")
           
-          urllib.request.urlretrieve(download_url, "imagebuilder.archive")
+          opener = urllib.request.build_opener()
+          opener.addheaders = [('User-Agent', 'Mozilla/5.0')]
+          urllib.request.install_opener(opener)
           
-          print("[Распаковка] Извлечение структуры Image Builder...")
+          urllib.request.urlretrieve(f"{base_url}/{ib_filename}", "imagebuilder.archive")
           os.makedirs("openwrt-ib", exist_ok=True)
           subprocess.run(["tar", "-xf", "imagebuilder.archive", "-C", "openwrt-ib", "--strip-components=1"], check=True)
 
-      - name: Inject Custom Repository
+      - name: Auto-Index Local Custom Packages (OPKG / APK)
         working-directory: openwrt-ib
         run: |
-          echo "src/gz custom_repo https://vladmir1981.github.io/custom-packages-repo/" >> repositories.conf
+          mkdir -p packages
+
+          shopt -s nullglob nocaseglob
+          cp ../*.ipk ./packages/ 2>/dev/null || true
+          cp ../*.apk ./packages/ 2>/dev/null || true
+          shopt -u nullglob nocaseglob
+
+          if [ -d "./staging_dir/host/bin/apk" ] || grep -q "apk" Makefile 2>/dev/null; then
+              echo "🤖 [Режим] Выявлен менеджер пакетов нового поколения APK"
+              
+              APK_BIN="./staging_dir/host/bin/apk"
+              if [ ! -f "$APK_BIN" ]; then APK_BIN="apk"; fi
+              
+              $APK_BIN index --output ./packages/packages.adb ./packages/*.apk ./packages/*.ipk 2>/dev/null || true
+              
+              mkdir -p etc/apk
+              echo "file:///home/runner/work/${{ github.event.repository.name }}/${{ github.event.repository.name }}/openwrt-ib/packages" >> etc/apk/repositories
+          else
+              echo "🤖 [Режим] Выявлен классический менеджер пакетов OPKG"
+              rm -rf tmp/opkg-lists lists/
+              
+              ./scripts/ipkg-make-index.sh ./packages > ./packages/Packages
+              gzip -9fk ./packages/Packages
+              
+              echo "src/gz custom_local file:///home/runner/work/${{ github.event.repository.name }}/${{ github.event.repository.name }}/openwrt-ib/packages" >> repositories.conf
+          fi
 
       - name: Resolve Real Profile Name via Make Info
         id: resolve_profile
@@ -96,82 +122,36 @@ jobs:
         env:
           LAUNCHER_PROFILE: ${{ github.event.inputs.profile }}
         run: |
-          import subprocess
-          import os
-          import sys
-          import re
-
-          requested = os.environ.get("LAUNCHER_PROFILE", "").strip().lower()
-          requested_clean = requested.replace("_", "").replace("-", "")
-          print(f"[Поиск] Ищем лучший профиль для переданного имени: {os.environ.get('LAUNCHER_PROFILE')}")
-
+          import subprocess, os, sys, re
+          requested = os.environ.get("LAUNCHER_PROFILE", "").strip().lower().replace("_", "").replace("-", "")
           result = subprocess.run(["make", "info"], capture_output=True, text=True)
           
           available_profiles = []
           profile_pattern = re.compile(r'^\s*([a-zA-Z0-9_\-]+):')
-
-          system_garbage = [
-              "target", "profile", "current", "available", "packages", 
-              "hasimagemetadata", "supporteddevices", "enabled"
-          ]
-
-          lines = result.stdout.splitlines()
-          for line in lines:
+          
+          for line in result.stdout.splitlines():
               match = profile_pattern.match(line)
               if match:
-                  prof_name = match.group(1)
-                  if prof_name.lower() not in system_garbage:
-                      if prof_name not in available_profiles:
-                          available_profiles.append(prof_name)
-
-          print(f"[Инфо] Успешно найденные профили в Image Builder: {available_profiles}")
-
-          if not available_profiles:
-              print("Критическая ошибка: Список доступных профилей пуст! Проверьте вывод команды make info.", file=sys.stderr)
-              sys.exit(1)
-
+                  prof = match.group(1)
+                  if prof.lower() not in ["target", "profile", "current", "available", "packages"]:
+                      if prof not in available_profiles: available_profiles.append(prof)
+          
           best_match = None
-
           for p in available_profiles:
-              if requested_clean == p.lower().replace("_", "").replace("-", ""):
+              if requested in p.lower().replace("_","").replace("-","") or p.lower().replace("_","").replace("-","") in requested:
                   best_match = p
                   break
-
-          if not best_match:
-              for p in available_profiles:
-                  p_clean = p.lower().replace("_", "").replace("-", "")
-                  if requested_clean in p_clean or p_clean in requested_clean:
-                      best_match = p
-                      break
-
-          if not best_match:
-              parts = [part for part in re.split(r'[-_]', requested) if len(part) > 2]
-              for part in parts:
-                  for p in available_profiles:
-                      if part in p.lower():
-                          best_match = p
-                          break
-                  if best_match:
-                      break
-
-          if not best_match:
-              best_match = os.environ.get("LAUNCHER_PROFILE")
-              print(f"[Предупреждение] Точного совпадения не найдено. Используем базовый профиль: {best_match}")
-          else:
-              print(f"🎉 [УСПЕХ] Облако автоматически сопоставило профиль: {best_match}")
-
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-              f.write(f"REAL_PROFILE={best_match}\n")
+          if not best_match: best_match = os.environ.get("LAUNCHER_PROFILE")
+          print(f"🎉 [УСПЕХ] Автоматически сопоставлен рабочий профиль: {best_match}")
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f: f.write(f"REAL_PROFILE={best_match}\n")
 
       - name: Run Firmware Compilation
         working-directory: openwrt-ib
         run: |
-          # Полностью сносим старый кэш репозиториев Image Builder.
-          # Это заставит встроенный в make image процесс принудительно перекачать индексы 
-          # из интернета и гарантированно увидеть ваш custom_repo.
-          rm -rf tmp/opkg-lists lists/
-          
-          make image             PROFILE="${{ steps.resolve_profile.outputs.REAL_PROFILE }}"             PACKAGES="${{ github.event.inputs.packages }}"             OPKG_FLAGS="-o option check_signature=0"
+          make image \
+            PROFILE="${{ steps.resolve_profile.outputs.REAL_PROFILE }}" \
+            PACKAGES="${{ github.event.inputs.packages }}" \
+            OPKG_FLAGS="--force-checksum --force-check-cert"
 
       - name: Upload Finished Binary Artifact
         uses: actions/upload-artifact@v4
