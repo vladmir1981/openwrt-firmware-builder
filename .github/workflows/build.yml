@@ -85,36 +85,6 @@ jobs:
           os.makedirs("openwrt-ib", exist_ok=True)
           subprocess.run(["tar", "-xf", "imagebuilder.archive", "-C", "openwrt-ib", "--strip-components=1"], check=True)
 
-      - name: Auto-Index Local Custom Packages (OPKG / APK)
-        working-directory: openwrt-ib
-        run: |
-          mkdir -p packages
-
-          shopt -s nullglob nocaseglob
-          cp ../*.ipk ./packages/ 2>/dev/null || true
-          cp ../*.apk ./packages/ 2>/dev/null || true
-          shopt -u nullglob nocaseglob
-
-          if [ -d "./staging_dir/host/bin/apk" ] || grep -q "apk" Makefile 2>/dev/null; then
-              echo "🤖 [Режим] Выявлен менеджер пакетов нового поколения APK"
-              
-              APK_BIN="./staging_dir/host/bin/apk"
-              if [ ! -f "$APK_BIN" ]; then APK_BIN="apk"; fi
-              
-              $APK_BIN index --output ./packages/packages.adb ./packages/*.apk ./packages/*.ipk 2>/dev/null || true
-              
-              mkdir -p etc/apk
-              echo "file:///home/runner/work/${{ github.event.repository.name }}/${{ github.event.repository.name }}/openwrt-ib/packages" >> etc/apk/repositories
-          else
-              echo "🤖 [Режим] Выявлен классический менеджер пакетов OPKG"
-              rm -rf tmp/opkg-lists lists/
-              
-              ./scripts/ipkg-make-index.sh ./packages > ./packages/Packages
-              gzip -9fk ./packages/Packages
-              
-              echo "src/gz custom_local file:///home/runner/work/${{ github.event.repository.name }}/${{ github.event.repository.name }}/openwrt-ib/packages" >> repositories.conf
-          fi
-
       - name: Resolve Real Profile Name via Make Info
         id: resolve_profile
         working-directory: openwrt-ib
@@ -122,39 +92,49 @@ jobs:
         env:
           LAUNCHER_PROFILE: ${{ github.event.inputs.profile }}
         run: |
-          import subprocess, os, sys, re
+          import subprocess, os, re
+          
           requested = os.environ.get("LAUNCHER_PROFILE", "").strip().lower().replace("_", "").replace("-", "")
           result = subprocess.run(["make", "info"], capture_output=True, text=True)
           
           available_profiles = []
-          profile_pattern = re.compile(r'^\s*([a-zA-Z0-9_\-]+):')
+          profile_pattern = re.compile(r'^([a-zA-Z0-9_\-]+):')
           
           for line in result.stdout.splitlines():
-              match = profile_pattern.match(line)
+              match = profile_pattern.match(line.strip())
               if match:
                   prof = match.group(1)
                   if prof.lower() not in ["target", "profile", "current", "available", "packages"]:
-                      if prof not in available_profiles: available_profiles.append(prof)
+                      available_profiles.append(prof)
           
           best_match = None
           for p in available_profiles:
-              if requested in p.lower().replace("_","").replace("-","") or p.lower().replace("_","").replace("-","") in requested:
+              clean_p = p.lower().replace("_","").replace("-","")
+              if requested in clean_p or clean_p in requested:
                   best_match = p
                   break
-          if not best_match: best_match = os.environ.get("LAUNCHER_PROFILE")
-          print(f"🎉 [УСПЕХ] Автоматически сопоставлен рабочий профиль: {best_match}")
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as f: f.write(f"REAL_PROFILE={best_match}\n")
+                  
+          if not best_match: 
+              best_match = os.environ.get("LAUNCHER_PROFILE").strip()
+              print(f"⚠️ [Предупреждение] Совпадений не найдено. Используем исходный профиль: {best_match}")
+          else:
+              print(f"🎉 [УСПЕХ] Автоматически сопоставлен рабочий профиль: {best_match}")
+              
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f: 
+              f.write(f"REAL_PROFILE={best_match}\n")
 
       - name: Run Firmware Compilation
         working-directory: openwrt-ib
         run: |
           make image \
             PROFILE="${{ steps.resolve_profile.outputs.REAL_PROFILE }}" \
-            PACKAGES="${{ github.event.inputs.packages }}" \
-            OPKG_FLAGS="--force-checksum --force-check-cert"
+            PACKAGES="${{ github.event.inputs.packages }}"
 
       - name: Upload Finished Binary Artifact
         uses: actions/upload-artifact@v4
         with:
           name: openwrt-${{ steps.resolve_profile.outputs.REAL_PROFILE }}-${{ github.event.inputs.version }}
-          path: openwrt-ib/bin/targets/*/*/*
+          path: |
+            openwrt-ib/bin/targets/*/*/*
+            !openwrt-ib/bin/targets/*/*/packages
+          if-no-files-found: error
