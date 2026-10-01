@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Версия OpenWrt (например: 23.05.5, 25.12.5 или snapshot)'
+        description: 'Версия OpenWrt (например: 25.12.5 или snapshot)'
         required: true
       target:
         description: 'Архитектура (например: mediatek)'
@@ -13,7 +13,7 @@ on:
         description: 'Чипсет (например: filogic)'
         required: true
       profile:
-        description: 'Профиль роутера (например: glinet_gl-mt6000)'
+        description: 'Профиль роутера'
         required: true
       packages:
         description: 'Пакеты через пробел'
@@ -48,8 +48,9 @@ jobs:
           t = os.environ.get("INPUT_TARGET", "").strip()
           s = os.environ.get("INPUT_SUBTARGET", "").strip()
 
-          is_snapshot = v.lower() == "snapshot"
+          is_snapshot = v.upper() == "SNAPSHOT"
           
+          # Корректные официальные URL-адреса загрузки OpenWrt
           if is_snapshot:
               base_url = f"https://downloads.openwrt.org/snapshots/targets/{t}/{s}"
           else:
@@ -98,6 +99,7 @@ jobs:
           result = subprocess.run(["make", "info"], capture_output=True, text=True)
           
           available_profiles = []
+          # Профили в выводе make info начинаются от края строки и заканчиваются на двоеточие
           profile_pattern = re.compile(r'^([a-zA-Z0-9_\-]+):')
           
           for line in result.stdout.splitlines():
@@ -123,6 +125,7 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f: 
               f.write(f"REAL_PROFILE={best_match}\n")
 
+      # СБОРКА НА ОФИЦИАЛЬНЫХ РЕПОЗИТОРИЯХ БЕЗ ИСПОЛЬЗОВАНИЯ ЛОКАЛЬНЫХ ПАКЕТОВ
       - name: Run Firmware Compilation
         working-directory: openwrt-ib
         run: |
@@ -134,6 +137,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: openwrt-${{ steps.resolve_profile.outputs.REAL_PROFILE }}-${{ github.event.inputs.version }}
+          # Исключаем папку с кэшем пакетов, забирая только файлы собранных прошивок и манифесты
           path: |
             openwrt-ib/bin/targets/*/*/*
             !openwrt-ib/bin/targets/*/*/packages
