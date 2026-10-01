@@ -1,0 +1,57 @@
+name: Remote Custom Image Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Версия OpenWrt (например, 23.05.0)'
+        required: true
+        default: '23.05.0'
+      target:
+        description: 'Архитектура (например, ramips)'
+        required: true
+      subtarget:
+        description: 'Чипсет (например, mt7621)'
+        required: true
+      profile:
+        description: 'Имя профиля роутера (например, xiaomi_mi-router-4a-gigabit)'
+        required: true
+      packages:
+        description: 'Список пакетов через пробел (например, luci luci-proto-wireguard)'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install build-essential gawk unzip libncurses5-dev zlib1g-dev libssl-dev file wget rsync
+
+      - name: Download OpenWrt Image Builder
+        run: |
+          IB_URL="https://openwrt.org{{ github.event.inputs.version }}/targets/${{ github.event.inputs.target }}/${{ github.event.inputs.subtarget }}/openwrt-imagebuilder-${{ github.event.inputs.version }}-${{ github.event.inputs.target }}-${{ github.event.inputs.subtarget }}.Linux-x86_64.tar.xz"
+          wget $IB_URL
+          tar -xJf openwrt-imagebuilder-*.tar.xz
+          echo "IB_DIR=$(ls -d openwrt-imagebuilder-* | head -n 1)" >> $GITHUB_ENV
+
+      - name: Inject Custom Repository
+        run: |
+          # Подставляем ваш логин vladmir1981 в URL репозитория пакетов
+          echo "src/gz custom_repo https://github.io" >> ${{ env.IB_DIR }}/repositories.conf
+
+      - name: Run Build
+        run: |
+          cd ${{ env.IB_DIR }}
+          make image PROFILE="${{ github.event.inputs.profile }}" PACKAGES="${{ github.event.inputs.packages }}"
+
+      - name: Upload Firmware Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: custom-openwrt-firmware
+          path: ${{ env.IB_DIR }}/bin/targets/${{ github.event.inputs.target }}/${{ github.event.inputs.subtarget }}/*.bin
