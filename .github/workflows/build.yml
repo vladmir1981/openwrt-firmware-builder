@@ -31,27 +31,29 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install build-essential gawk unzip libncurses5-dev zlib1g-dev libssl-dev file wget rsync
+          sudo apt install -y build-essential gawk unzip libncurses5-dev zlib1g-dev libssl-dev file wget rsync
 
       - name: Download OpenWrt Image Builder
         run: |
-          IB_URL="https://openwrt.org{{ github.event.inputs.version }}/targets/${{ github.event.inputs.target }}/${{ github.event.inputs.subtarget }}/openwrt-imagebuilder-${{ github.event.inputs.version }}-${{ github.event.inputs.target }}-${{ github.event.inputs.subtarget }}.Linux-x86_64.tar.xz"
-          wget $IB_URL
-          tar -xJf openwrt-imagebuilder-*.tar.xz
-          echo "IB_DIR=$(ls -d openwrt-imagebuilder-* | head -n 1)" >> $GITHUB_ENV
+          IB_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.version }}/targets/${{ github.event.inputs.target }}/${{ github.event.inputs.subtarget }}/openwrt-imagebuilder-${{ github.event.inputs.version }}-${{ github.event.inputs.target }}-${{ github.event.inputs.subtarget }}.Linux-x86_64.tar.xz"
+          echo "Скачивание конструктора по адресу: $IB_URL"
+          wget -O imagebuilder.tar.xz "$IB_URL"
+          # Распаковываем напрямую в корень рабочей папки
+          tar -xf imagebuilder.tar.xz --strip-components=1
 
       - name: Inject Custom Repository
         run: |
-          # Подставляем ваш логин vladmir1981 в URL репозитория пакетов
-          echo "src/gz custom_repo https://github.io" >> ${{ env.IB_DIR }}/repositories.conf
+          # Файлы лежат в корне, записываем ссылку на ваш репозиторий vladmir1981 прямо вrepositories.conf
+          echo "src/gz custom_repo https://vladmir1981.github.io/custom-packages-repo/" >> repositories.conf
 
       - name: Run Build
         run: |
-          cd ${{ env.IB_DIR }}
+          # Запускаем официальный компилятор OpenWrt из корня
           make image PROFILE="${{ github.event.inputs.profile }}" PACKAGES="${{ github.event.inputs.packages }}"
 
       - name: Upload Firmware Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: custom-openwrt-firmware
-          path: ${{ env.IB_DIR }}/bin/targets/${{ github.event.inputs.target }}/${{ github.event.inputs.subtarget }}/*.bin
+          name: openwrt-firmware-${{ github.event.inputs.profile }}-${{ github.event.inputs.version }}
+          # Указываем путь к целевой папке целиком, чтобы робот забрал файлы любого расширения (.bin, .trx, .img)
+          path: bin/targets/${{ github.event.inputs.target }}/${{ github.event.inputs.subtarget }}/
