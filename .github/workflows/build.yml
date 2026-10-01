@@ -4,16 +4,16 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Версия OpenWrt (например: 25.12.5 или snapshot)'
+        description: 'Версия OpenWrt (например: 24.10.8 или snapshot)'
         required: true
       target:
-        description: 'Архитектура (например: mediatek)'
+        description: 'Архитектура (например: qualcommax)'
         required: true
       subtarget:
-        description: 'Чипсет (например: filogic)'
+        description: 'Чипсет (например: ipq807x)'
         required: true
       profile:
-        description: 'Профиль роутера'
+        description: 'Профиль роутера (например: zbtlink_zbt-z800ax)'
         required: true
       packages:
         description: 'Пакеты через пробел'
@@ -30,7 +30,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y build-essential gawk unzip libncurses5-dev zlib1g-dev libssl-dev file wget rsync jq zstd curl python3
+          sudo apt install -y build-essential gawk unzip libncurses5-dev zlib1g-dev libssl-dev file wget rsync jq zstd curl python3 xz-utils
 
       - name: Download and Extract OpenWrt Image Builder
         shell: python
@@ -39,17 +39,15 @@ jobs:
           INPUT_TARGET: ${{ github.event.inputs.target }}
           INPUT_SUBTARGET: ${{ github.event.inputs.subtarget }}
         run: |
-          import urllib.request
-          import subprocess
-          import os
-          import sys
+          import urllib.request, subprocess, os, sys
 
           v = os.environ.get("INPUT_VERSION", "").strip()
           t = os.environ.get("INPUT_TARGET", "").strip()
           s = os.environ.get("INPUT_SUBTARGET", "").strip()
 
-          is_snapshot = v.upper() == "SNAPSHOT"
+          is_snapshot = v.lower() == "snapshot"
           
+          # Использован правильный домен downloads.openwrt.org и восстановлена структура путей
           if is_snapshot:
               base_url = f"https://downloads.openwrt.org/snapshots/targets/{t}/{s}"
           else:
@@ -63,6 +61,7 @@ jobs:
                   lines = response.read().decode('utf-8').splitlines()
           except Exception as e:
               print(f"Ошибка получения индекса: {e}", file=sys.stderr)
+              print(f"Проверьте правильность ввода параметров. Ссылка: {sha256_url}", file=sys.stderr)
               sys.exit(1)
 
           ib_filename = None
@@ -92,9 +91,9 @@ jobs:
         env:
           LAUNCHER_PROFILE: ${{ github.event.inputs.profile }}
         run: |
-          import subprocess, os, re
+          import subprocess, os, re, difflib
           
-          requested = os.environ.get("LAUNCHER_PROFILE", "").strip().lower().replace("_", "").replace("-", "")
+          requested = os.environ.get("LAUNCHER_PROFILE", "").strip()
           result = subprocess.run(["make", "info"], capture_output=True, text=True)
           
           available_profiles = []
@@ -108,27 +107,33 @@ jobs:
                       available_profiles.append(prof)
           
           best_match = None
-          for p in available_profiles:
-              clean_p = p.lower().replace("_","").replace("-","")
-              if requested in clean_p or clean_p in requested:
-                  best_match = p
-                  break
-                  
+          if requested in available_profiles:
+              best_match = requested
+          else:
+              matches = difflib.get_close_matches(requested, available_profiles, n=1, cutoff=0.3)
+              if matches:
+                  best_match = matches[0]
+              else:
+                  def clean(s): return s.lower().replace("-","").replace("_","").replace(" ","")
+                  for p in available_profiles:
+                      if clean(requested) in clean(p) or clean(p) in clean(requested):
+                          best_match = p
+                          break
+                          
           if not best_match: 
-              best_match = os.environ.get("LAUNCHER_PROFILE").strip()
+              best_match = requested
               print(f"⚠️ [Предупреждение] Совпадений не найдено. Используем исходный профиль: {best_match}")
           else:
               print(f"🎉 [УСПЕХ] Автоматически сопоставлен рабочий профиль: {best_match}")
               
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f: 
-              f.write(f"REAL_PROFILE={best_match}\n")
+              f.write(f"REAL_PROFILE={best_match}
+")
 
       - name: Run Firmware Compilation
         working-directory: openwrt-ib
         run: |
-          make image \
-            PROFILE="${{ steps.resolve_profile.outputs.REAL_PROFILE }}" \
-            PACKAGES="${{ github.event.inputs.packages }}"
+          make image             PROFILE="${{ steps.resolve_profile.outputs.REAL_PROFILE }}"             PACKAGES="${{ github.event.inputs.packages }}"
 
       - name: Upload Finished Binary Artifact
         uses: actions/upload-artifact@v4
