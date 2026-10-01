@@ -13,7 +13,7 @@ on:
         description: 'Чипсет (например: filogic)'
         required: true
       profile:
-        description: 'Профиль роутера (например: glinet_gl-mt6000)'
+        description: 'Профиль роутера (переданный из лаунчера, например: glinet_gl-mt6000)'
         required: true
       packages:
         description: 'Пакеты через пробел'
@@ -50,7 +50,6 @@ jobs:
 
           is_snapshot = v.upper() == "SNAPSHOT"
           
-          # 1. Исправлен базовый домен скачивания (только downloads.openwrt.org)
           if is_snapshot:
               base_url = f"https://downloads.openwrt.org/snapshots/targets/{t}/{s}"
           else:
@@ -58,7 +57,6 @@ jobs:
 
           print(f"[Инфо] Сканируем директорию: {base_url}")
           
-          # 2. Динамическое получение точного имени файла из манифеста sha256sums
           try:
               sha256_url = f"{base_url}/sha256sums"
               with urllib.request.urlopen(sha256_url) as response:
@@ -74,16 +72,14 @@ jobs:
                   break
 
           if not ib_filename:
-              print("Критическая ошибка: Файл Image Builder не найден в манифесте релиза OpenWrt!", file=sys.stderr)
+              print("Критическая ошибка: Файл Image Builder не найден в манифесте!", file=sys.stderr)
               sys.exit(1)
 
           download_url = f"{base_url}/{ib_filename}"
           print(f"[Успех] Найдено точное имя файла: {ib_filename}")
-          print(f"[Загрузка] Скачивание: {download_url}")
           
           urllib.request.urlretrieve(download_url, "imagebuilder.archive")
           
-          # 3. Распаковка в изолированный подкаталог во избежание конфликтов путей
           print("[Распаковка] Извлечение структуры Image Builder...")
           os.makedirs("openwrt-ib", exist_ok=True)
           subprocess.run(["tar", "-xf", "imagebuilder.archive", "-C", "openwrt-ib", "--strip-components=1"], check=True)
@@ -91,22 +87,76 @@ jobs:
       - name: Inject Custom Repository
         working-directory: openwrt-ib
         run: |
-          # 4. Ваша строка добавлена строго в оригинальном виде
           echo "src/gz custom_repo https://vladmir1981.github.io/custom-packages-repo/" >> repositories.conf
+
+      - name: Resolve Real Profile Name via Make Info
+        id: resolve_profile
+        working-directory: openwrt-ib
+        shell: python
+        env:
+          LAUNCHER_PROFILE: ${{ github.event.inputs.profile }}
+        run: |
+          import subprocess
+          import os
+          import sys
+
+          requested = os.environ.get("LAUNCHER_PROFILE", "").strip().lower()
+          requested_clean = requested.replace("_", "").replace("-", "")
+          print(f"[Поиск] Ищем лучший профиль для переданного имени: {os.environ.get('LAUNCHER_PROFILE')}")
+
+          result = subprocess.run(["make", "info"], capture_output=True, text=True)
+          
+          available_profiles = []
+          for line in result.stdout.splitlines():
+              # Надежно парсим профили, которые выводит `make info`
+              if ":" in line:
+                  parts = line.split(":", 1)
+                  first_word = parts[0].strip()
+                  if first_word and first_word not in ["Target", "Target-Profile-Packages", "Default-Packages", "Profile", "Current", "Available"]:
+                      # Зачастую имя профиля идет первым до двоеточия
+                      prof = first_word.split()[0]
+                      if prof not in available_profiles and " " not in prof:
+                          available_profiles.append(prof)
+              elif line.strip() and not line.startswith("Current") and not line.startswith("Available"):
+                  words = line.split()
+                  if words and words[0] not in ["Profile:", "Target:", "Default-Packages:"]:
+                      prof = words[0].strip()
+                      if prof and len(prof) > 2 and prof not in available_profiles:
+                          available_profiles.append(prof)
+
+          print(f"[Инфо] Доступные профили в этом Image Builder: {available_profiles}")
+
+          best_match = None
+          for p in available_profiles:
+              p_low = p.lower()
+              p_clean = p_low.replace("_", "").replace("-", "")
+              if requested_clean in p_clean or p_clean in requested_clean:
+                  best_match = p
+                  break
+
+          if not best_match:
+              model_part = requested.split("_")[-1].split("-")[-1]
+              for p in available_profiles:
+                  if model_part in p.lower():
+                      best_match = p
+                      break
+
+          if not best_match:
+              best_match = os.environ.get("LAUNCHER_PROFILE")
+              print(f"[Предупреждение] Не удалось сопоставить профиль. Используем базовый: {best_match}")
+          else:
+              print(f"🎉 [УСПЕХ] Облако автоматически сопоставило профиль: {best_match}")
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"REAL_PROFILE={best_match}\n")
 
       - name: Run Firmware Compilation
         working-directory: openwrt-ib
         run: |
-          # 5. Ключевой фикс: Передача флага отключения проверки подписи напрямую в OPKG_FLAGS, 
-          # так как opkg.conf компилятор генерирует динамически во временных каталогах
-          make image \
-            PROFILE="${{ github.event.inputs.profile }}" \
-            PACKAGES="${{ github.event.inputs.packages }}" \
-            OPKG_FLAGS="-o option check_signature=0"
+          make image             PROFILE="${{ steps.resolve_profile.outputs.REAL_PROFILE }}"             PACKAGES="${{ github.event.inputs.packages }}"             OPKG_FLAGS="-o option check_signature=0"
 
       - name: Upload Finished Binary Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt-${{ github.event.inputs.profile }}-${{ github.event.inputs.version }}
-          # 6. Исправлено: Динамический путь с маской собирает файлы для любых архитектур (x86, mediatek и др.)
+          name: openwrt-${{ steps.resolve_profile.outputs.REAL_PROFILE }}-${{ github.event.inputs.version }}
           path: openwrt-ib/bin/targets/*/*/*
