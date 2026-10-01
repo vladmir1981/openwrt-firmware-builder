@@ -1,11 +1,10 @@
-      - name: Resolve Real Profile Name via Make Info
+      - name: Resolve Real Profile Name via Directory Scan
         id: resolve_profile
         working-directory: openwrt-ib
         shell: python
         env:
           LAUNCHER_PROFILE: ${{ github.event.inputs.profile }}
         run: |
-          import subprocess
           import os
           import sys
           import re
@@ -14,31 +13,42 @@
           requested_clean = requested.replace("_", "").replace("-", "")
           print(f"[Поиск] Ищем лучший профиль для переданного имени: {os.environ.get('LAUNCHER_PROFILE')}")
 
-          # Запрашиваем официальный список профилей у конструктора
-          result = subprocess.run(["make", "info"], capture_output=True, text=True)
-          
           available_profiles = []
-          
-          # Шаг 1: Собираем ТОЛЬКО технические имена профилей
-          lines = result.stdout.splitlines()
-          for line in lines:
-              if line.startswith("Profile:"):
-                  prof = line.replace("Profile:", "").strip()
-                  if prof and prof not in available_profiles:
-                      available_profiles.append(prof)
+
+          # Каноничный поиск профилей по внутренней структуре Image Builder.
+          # Имена всех доступных профилей дублируются в виде файлов в папке target/linux/<arch>/profiles/
+          target_dir = os.path.join("target", "linux")
+          if os.path.exists(target_dir):
+              for root, dirs, files in os.walk(target_dir):
+                  if "profiles" in root:
+                      for file in files:
+                          if file.endswith(".mk"):
+                              # Имя файла без расширения (например, xiaomi_mi-router-4a.mk -> xiaomi_mi-router-4a)
+                              prof_name = file[:-3]
+                              if prof_name and prof_name not in available_profiles:
+                                  available_profiles.append(prof_name)
+
+          # Если папка profiles не нашлась (в редких архитектурах), используем fallback-парсинг make info
+          if not available_profiles:
+              import subprocess
+              result = subprocess.run(["make", "info"], capture_output=True, text=True)
+              for line in result.stdout.splitlines():
+                  if line.endswith(":") and not line.startswith("Target") and not line.startswith("Available"):
+                      prof_name = line[:-1].strip()
+                      if prof_name and " " not in prof_name:
+                          available_profiles.append(prof_name)
 
           print(f"[Инфо] Доступные технические профили в Image Builder: {available_profiles}")
 
           best_match = None
 
-          # Шаг 2: Проверяем строгое совпадение без учета дефисов и подчеркиваний
+          # Шаг 1: Проверяем строгое совпадение без учета дефисов и подчеркиваний
           for p in available_profiles:
-              p_clean = p.lower().replace("_", "").replace("-", "")
-              if requested_clean == p_clean:
+              if requested_clean == p.lower().replace("_", "").replace("-", ""):
                   best_match = p
                   break
 
-          # Шаг 3: Если точного совпадения нет, ищем частичное вхождение
+          # Шаг 2: Ищем частичное совпадение
           if not best_match:
               for p in available_profiles:
                   p_clean = p.lower().replace("_", "").replace("-", "")
@@ -46,7 +56,7 @@
                       best_match = p
                       break
 
-          # Шаг 4: ИСПРАВЛЕНО (Убран значок !). Ищем по отдельным словам, разбивая по дефисам и подчеркиваниям
+          # Шаг 3: Ищем по отдельным ключевым словам модели
           if not best_match:
               parts = [part for part in re.split(r'[-_]', requested) if len(part) > 2]
               for part in parts:
@@ -57,7 +67,7 @@
                   if best_match:
                       break
 
-          # Fallback защита
+          # Защита от пустого значения
           if not best_match:
               best_match = os.environ.get("LAUNCHER_PROFILE")
               print(f"[Предупреждение] Сопоставить не удалось. Используем базовый: {best_match}")
