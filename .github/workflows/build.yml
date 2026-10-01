@@ -50,7 +50,6 @@ jobs:
 
           is_snapshot = v.upper() == "SNAPSHOT"
           
-          # Корректные официальные URL-адреса загрузки OpenWrt
           if is_snapshot:
               base_url = f"https://downloads.openwrt.org/snapshots/targets/{t}/{s}"
           else:
@@ -99,7 +98,6 @@ jobs:
           result = subprocess.run(["make", "info"], capture_output=True, text=True)
           
           available_profiles = []
-          # Профили в выводе make info начинаются от края строки и заканчиваются на двоеточие
           profile_pattern = re.compile(r'^([a-zA-Z0-9_\-]+):')
           
           for line in result.stdout.splitlines():
@@ -125,7 +123,6 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f: 
               f.write(f"REAL_PROFILE={best_match}\n")
 
-      # СБОРКА НА ОФИЦИАЛЬНЫХ РЕПОЗИТОРИЯХ БЕЗ ИСПОЛЬЗОВАНИЯ ЛОКАЛЬНЫХ ПАКЕТОВ
       - name: Run Firmware Compilation
         working-directory: openwrt-ib
         run: |
@@ -137,7 +134,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: openwrt-${{ steps.resolve_profile.outputs.REAL_PROFILE }}-${{ github.event.inputs.version }}
-          # Исключаем папку с кэшем пакетов, забирая только файлы собранных прошивок и манифесты
           path: |
             openwrt-ib/bin/targets/*/*/*
             !openwrt-ib/bin/targets/*/*/packages
