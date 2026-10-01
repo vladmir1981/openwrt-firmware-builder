@@ -7,13 +7,13 @@ on:
         description: 'Версия OpenWrt (например: 23.05.5 или snapshot)'
         required: true
       target:
-        description: 'Архитектура (например: mediatek)'
+        description: 'Архитектура (например: ramips)'
         required: true
       subtarget:
-        description: 'Чипсет (например: filogic)'
+        description: 'Чипсет (например: mt7621)'
         required: true
       profile:
-        description: 'Профиль роутера (например: glinet_gl-mt6000)'
+        description: 'Профиль роутера (например: mercusys-mr70x-v1)'
         required: true
       packages:
         description: 'Пакеты через пробел'
@@ -110,12 +110,17 @@ jobs:
           available_profiles = []
           profile_pattern = re.compile(r'^\s*([a-zA-Z0-9_\-]+):')
 
+          system_garbage = [
+              "target", "profile", "current", "available", "packages", 
+              "hasimagemetadata", "supporteddevices", "enabled"
+          ]
+
           lines = result.stdout.splitlines()
           for line in lines:
               match = profile_pattern.match(line)
               if match:
                   prof_name = match.group(1)
-                  if prof_name.lower() not in ["target", "profile", "current", "available"]:
+                  if prof_name.lower() not in system_garbage:
                       if prof_name not in available_profiles:
                           available_profiles.append(prof_name)
 
@@ -161,12 +166,12 @@ jobs:
       - name: Run Firmware Compilation
         working-directory: openwrt-ib
         run: |
-          ./scripts/opkg update -o option check_signature=0
-
-          make image \
-            PROFILE="${{ steps.resolve_profile.outputs.REAL_PROFILE }}" \
-            PACKAGES="${{ github.event.inputs.packages }}" \
-            OPKG_FLAGS="-o option check_signature=0"
+          # Полностью сносим старый кэш репозиториев Image Builder.
+          # Это заставит встроенный в make image процесс принудительно перекачать индексы 
+          # из интернета и гарантированно увидеть ваш custom_repo.
+          rm -rf tmp/opkg-lists lists/
+          
+          make image             PROFILE="${{ steps.resolve_profile.outputs.REAL_PROFILE }}"             PACKAGES="${{ github.event.inputs.packages }}"             OPKG_FLAGS="-o option check_signature=0"
 
       - name: Upload Finished Binary Artifact
         uses: actions/upload-artifact@v4
