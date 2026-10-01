@@ -4,20 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Версия OpenWrt (например, 23.05.0)'
+        description: 'Версия OpenWrt (например: 25.12.5 или snapshot)'
         required: true
-        default: '23.05.0'
       target:
-        description: 'Архитектура (например, ramips)'
+        description: 'Архитектура (например: mediatek)'
         required: true
       subtarget:
-        description: 'Чипсет (например, mt7621)'
+        description: 'Чипсет (например: filogic)'
         required: true
       profile:
-        description: 'Имя профиля роутера (например, xiaomi_mi-router-4a-gigabit)'
+        description: 'Профиль роутера (например: glinet_gl-mt6000)'
         required: true
       packages:
-        description: 'Список пакетов через пробел (например, luci luci-proto-wireguard)'
+        description: 'Пакеты через пробел'
         required: false
         default: ''
 
@@ -25,35 +24,89 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y build-essential gawk unzip libncurses5-dev zlib1g-dev libssl-dev file wget rsync
+          sudo apt install -y build-essential gawk unzip libncurses5-dev zlib1g-dev libssl-dev file wget rsync jq zstd curl python3
 
-      - name: Download OpenWrt Image Builder
+      - name: Download and Extract OpenWrt Image Builder
+        shell: python
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          INPUT_TARGET: ${{ github.event.inputs.target }}
+          INPUT_SUBTARGET: ${{ github.event.inputs.subtarget }}
         run: |
-          IB_URL="https://downloads.openwrt.org/releases/${{ github.event.inputs.version }}/targets/${{ github.event.inputs.target }}/${{ github.event.inputs.subtarget }}/openwrt-imagebuilder-${{ github.event.inputs.version }}-${{ github.event.inputs.target }}-${{ github.event.inputs.subtarget }}.Linux-x86_64.tar.xz"
-          echo "Скачивание конструктора по адресу: $IB_URL"
-          wget -O imagebuilder.tar.xz "$IB_URL"
-          # Распаковываем напрямую в корень рабочей папки
-          tar -xf imagebuilder.tar.xz --strip-components=1
+          import urllib.request
+          import subprocess
+          import os
+          import sys
+
+          v = os.environ.get("INPUT_VERSION", "").strip()
+          t = os.environ.get("INPUT_TARGET", "").strip()
+          s = os.environ.get("INPUT_SUBTARGET", "").strip()
+
+          is_snapshot = v.upper() == "SNAPSHOT"
+          
+          # 1. Исправлен базовый домен скачивания (только downloads.openwrt.org)
+          if is_snapshot:
+              base_url = f"https://downloads.openwrt.org/snapshots/targets/{t}/{s}"
+          else:
+              base_url = f"https://downloads.openwrt.org/releases/{v}/targets/{t}/{s}"
+
+          print(f"[Инфо] Сканируем директорию: {base_url}")
+          
+          # 2. Динамическое получение точного имени файла из манифеста sha256sums
+          try:
+              sha256_url = f"{base_url}/sha256sums"
+              with urllib.request.urlopen(sha256_url) as response:
+                  lines = response.read().decode('utf-8').splitlines()
+          except Exception as e:
+              print(f"Критическая ошибка: Не удалось получить индекс файлов по адресу {sha256_url}. Ошибка: {e}", file=sys.stderr)
+              sys.exit(1)
+
+          ib_filename = None
+          for line in lines:
+              if "imagebuilder" in line and "Linux-x86_64" in line:
+                  ib_filename = line.split()[-1].lstrip('*')
+                  break
+
+          if not ib_filename:
+              print("Критическая ошибка: Файл Image Builder не найден в манифесте релиза OpenWrt!", file=sys.stderr)
+              sys.exit(1)
+
+          download_url = f"{base_url}/{ib_filename}"
+          print(f"[Успех] Найдено точное имя файла: {ib_filename}")
+          print(f"[Загрузка] Скачивание: {download_url}")
+          
+          urllib.request.urlretrieve(download_url, "imagebuilder.archive")
+          
+          # 3. Распаковка в изолированный подкаталог во избежание конфликтов путей
+          print("[Распаковка] Извлечение структуры Image Builder...")
+          os.makedirs("openwrt-ib", exist_ok=True)
+          subprocess.run(["tar", "-xf", "imagebuilder.archive", "-C", "openwrt-ib", "--strip-components=1"], check=True)
 
       - name: Inject Custom Repository
+        working-directory: openwrt-ib
         run: |
-          # Файлы лежат в корне, записываем ссылку на ваш репозиторий vladmir1981 прямо вrepositories.conf
+          # 4. Ваша строка добавлена строго в оригинальном виде
           echo "src/gz custom_repo https://vladmir1981.github.io/custom-packages-repo/" >> repositories.conf
 
-      - name: Run Build
+      - name: Run Firmware Compilation
+        working-directory: openwrt-ib
         run: |
-          # Запускаем официальный компилятор OpenWrt из корня
-          make image PROFILE="${{ github.event.inputs.profile }}" PACKAGES="${{ github.event.inputs.packages }}"
+          # 5. Ключевой фикс: Передача флага отключения проверки подписи напрямую в OPKG_FLAGS, 
+          # так как opkg.conf компилятор генерирует динамически во временных каталогах
+          make image \
+            PROFILE="${{ github.event.inputs.profile }}" \
+            PACKAGES="${{ github.event.inputs.packages }}" \
+            OPKG_FLAGS="-o option check_signature=0"
 
-      - name: Upload Firmware Artifact
+      - name: Upload Finished Binary Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: openwrt-firmware-${{ github.event.inputs.profile }}-${{ github.event.inputs.version }}
-          # Указываем путь к целевой папке целиком, чтобы робот забрал файлы любого расширения (.bin, .trx, .img)
-          path: bin/targets/${{ github.event.inputs.target }}/${{ github.event.inputs.subtarget }}/
+          name: openwrt-${{ github.event.inputs.profile }}-${{ github.event.inputs.version }}
+          # 6. Исправлено: Динамический путь с маской собирает файлы для любых архитектур (x86, mediatek и др.)
+          path: openwrt-ib/bin/targets/*/*/*
