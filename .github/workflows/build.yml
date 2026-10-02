@@ -128,6 +128,44 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f"REAL_PROFILE={best_match}\n")
 
+      - name: Inject Custom Packages Feed
+        working-directory: openwrt-ib
+        env:
+          VER: ${{ github.event.inputs.version }}
+        run: |
+          set -e
+
+          # Определяем ветку фида по версии OpenWrt
+          if [[ "$VER" == 23.05* ]]; then
+            FEED_BRANCH="23.05"
+          elif [[ "$VER" == 24.10* ]]; then
+            FEED_BRANCH="24.10"
+          elif [[ "$VER" == 25.12* ]] || [[ "$VER" == "snapshot" ]]; then
+            FEED_BRANCH="25.12"
+          else
+            FEED_BRANCH="24.10"
+          fi
+          echo "[Инфо] Версия OpenWrt: $VER → ветка фида: $FEED_BRANCH"
+
+          # Проверяем, существует ли папка ветки (для snapshot/25.12 может ещё не быть)
+          FEED_URL="https://raw.githubusercontent.com/vladmir1981/custom-packages-repo/main/${FEED_BRANCH}"
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${FEED_URL}/Packages.gz" || echo "000")
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "⚠ Фид для ветки $FEED_BRANCH недоступен (HTTP $HTTP_CODE)."
+            echo "  Прошивка соберётся без кастомных пакетов."
+            exit 0
+          fi
+
+          echo "✔ Фид доступен: $FEED_URL/Packages.gz"
+
+          # Добавляем фид в repositories.conf
+          # $ARCH Image Builder подставит сам (aarch64_cortex-a53, mipsel_24kc и т.д.)
+          echo "src custom ${FEED_URL}/\$ARCH" >> repositories.conf
+
+          echo "=== Итоговый repositories.conf ==="
+          cat repositories.conf
+
       - name: Run Firmware Compilation
         working-directory: openwrt-ib
         run: |
