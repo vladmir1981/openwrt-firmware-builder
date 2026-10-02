@@ -183,6 +183,10 @@ jobs:
           echo "✔ Фид доступен: ${FEED_URL}/Packages.gz"
           echo "src custom ${FEED_URL}" >> repositories.conf
 
+          # 6. ВАЖНО: отключаем проверку подписи — наш фид не подписан GPG-ключом OpenWrt
+          sed -i 's/^option check_signature/# option check_signature/' repositories.conf
+          sed -i 's/^check_signature/# check_signature/' repositories.conf
+
           echo "=== Итоговый repositories.conf ==="
           cat repositories.conf
 
