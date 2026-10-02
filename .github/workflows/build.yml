@@ -132,10 +132,12 @@ jobs:
         working-directory: openwrt-ib
         env:
           VER: ${{ github.event.inputs.version }}
+          TGT: ${{ github.event.inputs.target }}
+          SUB: ${{ github.event.inputs.subtarget }}
         run: |
           set -e
 
-          # Определяем ветку фида по версии OpenWrt
+          # 1. Определяем ветку фида по версии
           if [[ "$VER" == 23.05* ]]; then
             FEED_BRANCH="23.05"
           elif [[ "$VER" == 24.10* ]]; then
@@ -147,21 +149,39 @@ jobs:
           fi
           echo "[Инфо] Версия OpenWrt: $VER → ветка фида: $FEED_BRANCH"
 
-          # Проверяем, существует ли папка ветки (для snapshot/25.12 может ещё не быть)
-          FEED_URL="https://raw.githubusercontent.com/vladmir1981/custom-packages-repo/main/${FEED_BRANCH}"
+          # 2. Определяем архитектуру CPU по target/subtarget
+          case "${TGT}/${SUB}" in
+            "mediatek/filogic"|"mediatek/mt7622"|\
+            "qualcommax/ipq807x"|"qualcommax/ipq60xx"|"qualcommax/ipq50xx"|\
+            "bcm27xx/bcm2710"|"bcm27xx/bcm2711"|"bcm27xx/bcm2712"|\
+            "rockchip/armv8"|"sunxi/cortexa53"|"mvebu/cortexa53")
+              ARCH_DIR="aarch64_cortex-a53" ;;
+            "ramips/mt7621"|"ramips/mt7620"|"ramips/mt76x8"|\
+            "ramips/rt305x"|"ramips/rt3883")
+              ARCH_DIR="mipsel_24kc" ;;
+            "ath79/generic"|"ath79/tiny"|"ath79/nand"|"ath79/mikrotik"|\
+            "lantiq/xrx200"|"lantiq/xrx200_legacy"|"lantiq/xway")
+              ARCH_DIR="mips_24kc" ;;
+            *)
+              ARCH_DIR="aarch64_cortex-a53" ;;
+          esac
+          echo "[Инфо] target/subtarget: ${TGT}/${SUB} → arch: $ARCH_DIR"
+
+          # 3. Формируем точный URL фида
+          FEED_URL="https://raw.githubusercontent.com/vladmir1981/custom-packages-repo/main/${FEED_BRANCH}/${ARCH_DIR}"
+
+          # 4. Проверяем, что Packages.gz существует
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${FEED_URL}/Packages.gz" || echo "000")
+          echo "[Инфо] Проверка ${FEED_URL}/Packages.gz → HTTP $HTTP_CODE"
 
           if [ "$HTTP_CODE" != "200" ]; then
-            echo "⚠ Фид для ветки $FEED_BRANCH недоступен (HTTP $HTTP_CODE)."
-            echo "  Прошивка соберётся без кастомных пакетов."
+            echo "⚠ Фид недоступен (HTTP $HTTP_CODE). Прошивка соберётся без кастомных пакетов."
             exit 0
           fi
 
-          echo "✔ Фид доступен: $FEED_URL/Packages.gz"
-
-          # Добавляем фид в repositories.conf
-          # $ARCH Image Builder подставит сам (aarch64_cortex-a53, mipsel_24kc и т.д.)
-          echo "src custom ${FEED_URL}/\$ARCH" >> repositories.conf
+          # 5. Подключаем фид
+          echo "✔ Фид доступен: ${FEED_URL}/Packages.gz"
+          echo "src custom ${FEED_URL}" >> repositories.conf
 
           echo "=== Итоговый repositories.conf ==="
           cat repositories.conf
