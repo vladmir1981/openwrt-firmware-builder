@@ -46,8 +46,7 @@ jobs:
           s = os.environ.get("INPUT_SUBTARGET", "").strip()
 
           is_snapshot = v.lower() == "snapshot"
-          
-          # Использован правильный домен downloads.openwrt.org и восстановлена структура путей
+
           if is_snapshot:
               base_url = f"https://downloads.openwrt.org/snapshots/targets/{t}/{s}"
           else:
@@ -75,11 +74,11 @@ jobs:
               sys.exit(1)
 
           print(f"[Успех] Скачиваем: {ib_filename}")
-          
+
           opener = urllib.request.build_opener()
           opener.addheaders = [('User-Agent', 'Mozilla/5.0')]
           urllib.request.install_opener(opener)
-          
+
           urllib.request.urlretrieve(f"{base_url}/{ib_filename}", "imagebuilder.archive")
           os.makedirs("openwrt-ib", exist_ok=True)
           subprocess.run(["tar", "-xf", "imagebuilder.archive", "-C", "openwrt-ib", "--strip-components=1"], check=True)
@@ -92,20 +91,20 @@ jobs:
           LAUNCHER_PROFILE: ${{ github.event.inputs.profile }}
         run: |
           import subprocess, os, re, difflib
-          
+
           requested = os.environ.get("LAUNCHER_PROFILE", "").strip()
           result = subprocess.run(["make", "info"], capture_output=True, text=True)
-          
+
           available_profiles = []
           profile_pattern = re.compile(r'^([a-zA-Z0-9_\-]+):')
-          
+
           for line in result.stdout.splitlines():
               match = profile_pattern.match(line.strip())
               if match:
                   prof = match.group(1)
                   if prof.lower() not in ["target", "profile", "current", "available", "packages"]:
                       available_profiles.append(prof)
-          
+
           best_match = None
           if requested in available_profiles:
               best_match = requested
@@ -119,21 +118,22 @@ jobs:
                       if clean(requested) in clean(p) or clean(p) in clean(requested):
                           best_match = p
                           break
-                          
-          if not best_match: 
+
+          if not best_match:
               best_match = requested
               print(f"⚠️ [Предупреждение] Совпадений не найдено. Используем исходный профиль: {best_match}")
           else:
               print(f"🎉 [УСПЕХ] Автоматически сопоставлен рабочий профиль: {best_match}")
-              
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as f: 
-              f.write(f"REAL_PROFILE={best_match}
-")
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f"REAL_PROFILE={best_match}\n")
 
       - name: Run Firmware Compilation
         working-directory: openwrt-ib
         run: |
-          make image             PROFILE="${{ steps.resolve_profile.outputs.REAL_PROFILE }}"             PACKAGES="${{ github.event.inputs.packages }}"
+          make image \
+            PROFILE="${{ steps.resolve_profile.outputs.REAL_PROFILE }}" \
+            PACKAGES="${{ github.event.inputs.packages }}"
 
       - name: Upload Finished Binary Artifact
         uses: actions/upload-artifact@v4
