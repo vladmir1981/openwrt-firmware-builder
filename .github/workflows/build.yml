@@ -4,16 +4,16 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Версия OpenWrt (например: 24.10.8 или snapshot)'
+        description: 'Версия OpenWrt'
         required: true
       target:
-        description: 'Архитектура (например: qualcommax)'
+        description: 'Архитектура'
         required: true
       subtarget:
-        description: 'Чипсет (например: ipq807x)'
+        description: 'Чипсет'
         required: true
       profile:
-        description: 'Профиль роутера (например: zbtlink_zbt-z800ax)'
+        description: 'Профиль роутера'
         required: true
       packages:
         description: 'Пакеты через пробел'
@@ -46,13 +46,12 @@ jobs:
           s = os.environ.get("INPUT_SUBTARGET", "").strip()
 
           is_snapshot = v.lower() == "snapshot"
-
           if is_snapshot:
               base_url = f"https://downloads.openwrt.org/snapshots/targets/{t}/{s}"
           else:
               base_url = f"https://downloads.openwrt.org/releases/{v}/targets/{t}/{s}"
 
-          print(f"[Инфо] Сканируем директорию: {base_url}")
+          print(f"[Инфо] Сканируем: {base_url}")
           try:
               sha256_url = f"{base_url}/sha256sums"
               req = urllib.request.Request(sha256_url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -60,7 +59,6 @@ jobs:
                   lines = response.read().decode('utf-8').splitlines()
           except Exception as e:
               print(f"Ошибка получения индекса: {e}", file=sys.stderr)
-              print(f"Проверьте правильность ввода параметров. Ссылка: {sha256_url}", file=sys.stderr)
               sys.exit(1)
 
           ib_filename = None
@@ -70,15 +68,13 @@ jobs:
                   break
 
           if not ib_filename:
-              print("Критическая ошибка: Image Builder не найден в манифесте релиза!", file=sys.stderr)
+              print("Image Builder не найден!", file=sys.stderr)
               sys.exit(1)
 
           print(f"[Успех] Скачиваем: {ib_filename}")
-
           opener = urllib.request.build_opener()
           opener.addheaders = [('User-Agent', 'Mozilla/5.0')]
           urllib.request.install_opener(opener)
-
           urllib.request.urlretrieve(f"{base_url}/{ib_filename}", "imagebuilder.archive")
           os.makedirs("openwrt-ib", exist_ok=True)
           subprocess.run(["tar", "-xf", "imagebuilder.archive", "-C", "openwrt-ib", "--strip-components=1"], check=True)
@@ -97,7 +93,6 @@ jobs:
 
           available_profiles = []
           profile_pattern = re.compile(r'^([a-zA-Z0-9_\-]+):')
-
           for line in result.stdout.splitlines():
               match = profile_pattern.match(line.strip())
               if match:
@@ -121,9 +116,9 @@ jobs:
 
           if not best_match:
               best_match = requested
-              print(f"⚠️ [Предупреждение] Совпадений не найдено. Используем исходный профиль: {best_match}")
+              print(f"⚠️ Совпадений не найдено. Используем: {best_match}")
           else:
-              print(f"🎉 [УСПЕХ] Автоматически сопоставлен рабочий профиль: {best_match}")
+              print(f"🎉 Сопоставлен профиль: {best_match}")
 
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f"REAL_PROFILE={best_match}\n")
@@ -140,14 +135,18 @@ jobs:
           # 1. Ветка фида по версии
           if [[ "$VER" == 23.05* ]]; then
             FEED_BRANCH="23.05"
+            INDEX_FILE="Packages.gz"
           elif [[ "$VER" == 24.10* ]]; then
             FEED_BRANCH="24.10"
+            INDEX_FILE="Packages.gz"
           elif [[ "$VER" == 25.12* ]] || [[ "$VER" == "snapshot" ]]; then
             FEED_BRANCH="25.12"
+            INDEX_FILE="APKINDEX.tar.gz"
           else
             FEED_BRANCH="24.10"
+            INDEX_FILE="Packages.gz"
           fi
-          echo "[Инфо] Версия OpenWrt: $VER → ветка фида: $FEED_BRANCH"
+          echo "[Инфо] Версия: $VER → ветка: $FEED_BRANCH (индекс: $INDEX_FILE)"
 
           # 2. Архитектура CPU
           case "${TGT}/${SUB}" in
@@ -167,40 +166,34 @@ jobs:
           esac
           echo "[Инфо] target/subtarget: ${TGT}/${SUB} → arch: $ARCH_DIR"
 
-          # 3. URL фида
+          # 3. Формируем URL фида
           FEED_URL="https://raw.githubusercontent.com/vladmir1981/custom-packages-repo/main/${FEED_BRANCH}/${ARCH_DIR}"
 
-          # 4. Проверка доступности
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${FEED_URL}/Packages.gz" || echo "000")
-          echo "[Инфо] Проверка ${FEED_URL}/Packages.gz → HTTP $HTTP_CODE"
+          # 4. Проверяем доступность индекса
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${FEED_URL}/${INDEX_FILE}" || echo "000")
+          echo "[Инфо] Проверка ${FEED_URL}/${INDEX_FILE} → HTTP $HTTP_CODE"
 
           if [ "$HTTP_CODE" != "200" ]; then
             echo "⚠ Фид недоступен (HTTP $HTTP_CODE). Прошивка соберётся без кастомных пакетов."
             exit 0
           fi
 
-          # 5. Подключаем фид
-          echo "✔ Фид доступен: ${FEED_URL}/Packages.gz"
+          # 5. Подключаем фид в repositories.conf
+          echo "✔ Фид доступен: ${FEED_URL}/${INDEX_FILE}"
           echo "src custom ${FEED_URL}" >> repositories.conf
 
-          # 6. УДАЛЯЕМ любую строку с check_signature (жёсткий фикс)
-          grep -v "check_signature" repositories.conf > /tmp/repos.tmp || true
-          mv /tmp/repos.tmp repositories.conf
+          # 6. Для opkg (23.05/24.10) — отключаем проверку подписи
+          if [[ "$FEED_BRANCH" != "25.12" ]]; then
+            grep -v "check_signature" repositories.conf > /tmp/repos.tmp || true
+            mv /tmp/repos.tmp repositories.conf
+          fi
 
           echo "=== Итоговый repositories.conf ==="
           cat repositories.conf
 
-          echo "=== Диагностика: скачивается ли zapret-ipk ==="
-          curl -s -I "${FEED_URL}/zapret_72.20260307-r1_aarch64_cortex-a53.ipk" | head -5 || true
-
       - name: Run Firmware Compilation
         working-directory: openwrt-ib
         run: |
-          # Печатаем содержимое файла перед сборкой (для отладки)
-          echo "=== FINAL repositories.conf BEFORE make image ==="
-          cat repositories.conf
-          echo "=== END ==="
-
           make image \
             PROFILE="${{ steps.resolve_profile.outputs.REAL_PROFILE }}" \
             PACKAGES="${{ github.event.inputs.packages }}"
