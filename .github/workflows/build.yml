@@ -163,7 +163,12 @@ jobs:
             echo "[Инфо] Скачиваем ${LUCI_FILE}"
             curl -sL "${BASE_APK}/${LUCI_FILE}" -o "packages/${LUCI_FILE}"
 
-            echo "[Инфо] Размеры:"
+            # ВАЖНО: apk ожидает имя <pkgname>-<pkgver>.apk
+            # Переименовываем как zapret2-1.0.5.2.apk и luci-app-zapret2-1.0.5.2.apk
+            mv "packages/${ZAPRET2_FILE}" "packages/zapret2-1.0.5.2.apk"
+            mv "packages/${LUCI_FILE}" "packages/luci-app-zapret2-1.0.5.2.apk"
+
+            echo "[Инфо] Файлы после переименования:"
             ls -la packages/
 
             # Ключ
