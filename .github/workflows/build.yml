@@ -142,10 +142,14 @@ jobs:
           esac
           echo "[Инфо] arch: $ARCH_DIR"
 
-          FEED_URL="https://raw.githubusercontent.com/vladmir1981/custom-packages-repo/main/${FEED_BRANCH}/${ARCH_DIR}"
+          # Для opkg — полный URL с arch (для проверки)
+          FEED_URL_WITH_ARCH="https://raw.githubusercontent.com/vladmir1981/custom-packages-repo/main/${FEED_BRANCH}/${ARCH_DIR}"
+          # Для apk — URL БЕЗ arch (apk добавит сам)
+          FEED_URL_NO_ARCH="https://raw.githubusercontent.com/vladmir1981/custom-packages-repo/main/${FEED_BRANCH}"
 
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${FEED_URL}/${INDEX_FILE}" || echo "000")
-          echo "[Инфо] Проверка ${FEED_URL}/${INDEX_FILE} → HTTP $HTTP_CODE"
+          # Проверка HTTP (полный путь)
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${FEED_URL_WITH_ARCH}/${INDEX_FILE}" || echo "000")
+          echo "[Инфо] Проверка ${FEED_URL_WITH_ARCH}/${INDEX_FILE} → HTTP $HTTP_CODE"
           if [ "$HTTP_CODE" != "200" ]; then
             echo "⚠ Фид недоступен"
             exit 0
@@ -158,21 +162,18 @@ jobs:
             sudo curl -sL "$KEY_URL" -o /etc/apk/keys/zapret2-1andrevich.pub
             sudo chmod 644 /etc/apk/keys/zapret2-1andrevich.pub
 
-            # Копия ключа в IB
             cp /etc/apk/keys/zapret2-1andrevich.pub keys/ 2>/dev/null || true
 
-            echo "[Инфо] Ключ в /etc/apk/keys/:"
-            ls -la /etc/apk/keys/
-            echo "[Инфо] Ключ в openwrt-ib/keys/:"
+            echo "[Инфо] Ключ:"
             ls -la keys/
 
-            # ВАЖНО для 25.12: пишем URL в файл "repositories" (без .conf)
-            echo "${FEED_URL}" >> repositories
+            # ВАЖНО: URL БЕЗ arch — apk сам подставит $ARCH/APKINDEX.tar.gz
+            echo "${FEED_URL_NO_ARCH}" >> repositories
 
             echo "=== Итоговый repositories ==="
             cat repositories
           else
-            echo "src custom ${FEED_URL}" >> repositories.conf
+            echo "src custom ${FEED_URL_WITH_ARCH}" >> repositories.conf
             grep -v "check_signature" repositories.conf > /tmp/repos.tmp || true
             mv /tmp/repos.tmp repositories.conf
             echo "=== Итоговый repositories.conf ==="
