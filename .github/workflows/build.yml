@@ -142,41 +142,40 @@ jobs:
           esac
           echo "[Инфо] arch: $ARCH_DIR"
 
-          # Для opkg — полный URL с arch (для проверки)
-          FEED_URL_WITH_ARCH="https://raw.githubusercontent.com/vladmir1981/custom-packages-repo/main/${FEED_BRANCH}/${ARCH_DIR}"
-          # Для apk — URL БЕЗ arch (apk добавит сам)
-          FEED_URL_NO_ARCH="https://raw.githubusercontent.com/vladmir1981/custom-packages-repo/main/${FEED_BRANCH}"
+          FEED_URL="https://raw.githubusercontent.com/vladmir1981/custom-packages-repo/main/${FEED_BRANCH}/${ARCH_DIR}"
 
-          # Проверка HTTP (полный путь)
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${FEED_URL_WITH_ARCH}/${INDEX_FILE}" || echo "000")
-          echo "[Инфо] Проверка ${FEED_URL_WITH_ARCH}/${INDEX_FILE} → HTTP $HTTP_CODE"
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${FEED_URL}/${INDEX_FILE}" || echo "000")
+          echo "[Инфо] HTTP фида: $HTTP_CODE"
           if [ "$HTTP_CODE" != "200" ]; then
             echo "⚠ Фид недоступен"
             exit 0
           fi
 
           if [ "$IS_APK" = "1" ]; then
-            # Ключ подписи zapret2
-            KEY_URL="https://raw.githubusercontent.com/vladmir1981/custom-packages-repo/main/zapret2-1andrevich.pub"
+            # Локальная установка .apk в папку packages/
+            mkdir -p packages
+            BASE_APK="https://github.com/1andrevich/zapret2-openwrt/releases/download/v1.0.5.2"
+            ZAPRET2_FILE="zapret2_${ARCH_DIR}.apk"
+            LUCI_FILE="luci-app-zapret2.apk"
+
+            echo "[Инфо] Скачиваем ${ZAPRET2_FILE}"
+            curl -sL "${BASE_APK}/${ZAPRET2_FILE}" -o "packages/${ZAPRET2_FILE}"
+            echo "[Инфо] Скачиваем ${LUCI_FILE}"
+            curl -sL "${BASE_APK}/${LUCI_FILE}" -o "packages/${LUCI_FILE}"
+
+            echo "[Инфо] Размеры:"
+            ls -la packages/
+
+            # Ключ
             sudo mkdir -p /etc/apk/keys
-            sudo curl -sL "$KEY_URL" -o /etc/apk/keys/zapret2-1andrevich.pub
+            sudo curl -sL "https://raw.githubusercontent.com/vladmir1981/custom-packages-repo/main/zapret2-1andrevich.pub" -o /etc/apk/keys/zapret2-1andrevich.pub
             sudo chmod 644 /etc/apk/keys/zapret2-1andrevich.pub
-
             cp /etc/apk/keys/zapret2-1andrevich.pub keys/ 2>/dev/null || true
-
-            echo "[Инфо] Ключ:"
-            ls -la keys/
-
-            # ВАЖНО: URL БЕЗ arch — apk сам подставит $ARCH/APKINDEX.tar.gz
-            echo "${FEED_URL_NO_ARCH}" >> repositories
-
-            echo "=== Итоговый repositories ==="
-            cat repositories
           else
-            echo "src custom ${FEED_URL_WITH_ARCH}" >> repositories.conf
+            echo "src custom ${FEED_URL}" >> repositories.conf
             grep -v "check_signature" repositories.conf > /tmp/repos.tmp || true
             mv /tmp/repos.tmp repositories.conf
-            echo "=== Итоговый repositories.conf ==="
+            echo "=== repositories.conf ==="
             cat repositories.conf
           fi
 
