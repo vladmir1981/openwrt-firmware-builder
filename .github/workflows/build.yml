@@ -40,17 +40,14 @@ jobs:
           INPUT_SUBTARGET: ${{ github.event.inputs.subtarget }}
         run: |
           import urllib.request, subprocess, os, sys
-
           v = os.environ.get("INPUT_VERSION", "").strip()
           t = os.environ.get("INPUT_TARGET", "").strip()
           s = os.environ.get("INPUT_SUBTARGET", "").strip()
-
           is_snapshot = v.lower() == "snapshot"
           if is_snapshot:
               base_url = f"https://downloads.openwrt.org/snapshots/targets/{t}/{s}"
           else:
               base_url = f"https://downloads.openwrt.org/releases/{v}/targets/{t}/{s}"
-
           print(f"[Инфо] Сканируем: {base_url}")
           try:
               sha256_url = f"{base_url}/sha256sums"
@@ -58,20 +55,14 @@ jobs:
               with urllib.request.urlopen(req) as response:
                   lines = response.read().decode('utf-8').splitlines()
           except Exception as e:
-              print(f"Ошибка получения индекса: {e}", file=sys.stderr)
-              sys.exit(1)
-
+              print(f"Ошибка: {e}", file=sys.stderr); sys.exit(1)
           ib_filename = None
           for line in lines:
               if "imagebuilder" in line and "Linux-x86_64" in line:
-                  ib_filename = line.split()[-1].lstrip('*')
-                  break
-
+                  ib_filename = line.split()[-1].lstrip('*'); break
           if not ib_filename:
-              print("Image Builder не найден!", file=sys.stderr)
-              sys.exit(1)
-
-          print(f"[Успех] Скачиваем: {ib_filename}")
+              print("Image Builder не найден!", file=sys.stderr); sys.exit(1)
+          print(f"[Успех] {ib_filename}")
           opener = urllib.request.build_opener()
           opener.addheaders = [('User-Agent', 'Mozilla/5.0')]
           urllib.request.install_opener(opener)
@@ -87,10 +78,8 @@ jobs:
           LAUNCHER_PROFILE: ${{ github.event.inputs.profile }}
         run: |
           import subprocess, os, re, difflib
-
           requested = os.environ.get("LAUNCHER_PROFILE", "").strip()
           result = subprocess.run(["make", "info"], capture_output=True, text=True)
-
           available_profiles = []
           profile_pattern = re.compile(r'^([a-zA-Z0-9_\-]+):')
           for line in result.stdout.splitlines():
@@ -99,7 +88,6 @@ jobs:
                   prof = match.group(1)
                   if prof.lower() not in ["target", "profile", "current", "available", "packages"]:
                       available_profiles.append(prof)
-
           best_match = None
           if requested in available_profiles:
               best_match = requested
@@ -111,15 +99,12 @@ jobs:
                   def clean(s): return s.lower().replace("-","").replace("_","").replace(" ","")
                   for p in available_profiles:
                       if clean(requested) in clean(p) or clean(p) in clean(requested):
-                          best_match = p
-                          break
-
+                          best_match = p; break
           if not best_match:
               best_match = requested
-              print(f"⚠️ Совпадений не найдено. Используем: {best_match}")
+              print(f"⚠️ Используем: {best_match}")
           else:
-              print(f"🎉 Сопоставлен профиль: {best_match}")
-
+              print(f"🎉 Профиль: {best_match}")
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f"REAL_PROFILE={best_match}\n")
 
@@ -132,23 +117,19 @@ jobs:
         run: |
           set -e
 
-          # 1. Ветка фида по версии
+          # 1. Ветка и тип индекса
           if [[ "$VER" == 23.05* ]]; then
-            FEED_BRANCH="23.05"
-            INDEX_FILE="Packages.gz"
+            FEED_BRANCH="23.05"; INDEX_FILE="Packages.gz"; IS_APK=0
           elif [[ "$VER" == 24.10* ]]; then
-            FEED_BRANCH="24.10"
-            INDEX_FILE="Packages.gz"
+            FEED_BRANCH="24.10"; INDEX_FILE="Packages.gz"; IS_APK=0
           elif [[ "$VER" == 25.12* ]] || [[ "$VER" == "snapshot" ]]; then
-            FEED_BRANCH="25.12"
-            INDEX_FILE="APKINDEX.tar.gz"
+            FEED_BRANCH="25.12"; INDEX_FILE="APKINDEX.tar.gz"; IS_APK=1
           else
-            FEED_BRANCH="24.10"
-            INDEX_FILE="Packages.gz"
+            FEED_BRANCH="24.10"; INDEX_FILE="Packages.gz"; IS_APK=0
           fi
-          echo "[Инфо] Версия: $VER → ветка: $FEED_BRANCH (индекс: $INDEX_FILE)"
+          echo "[Инфо] Версия: $VER → ветка: $FEED_BRANCH, apk=$IS_APK"
 
-          # 2. Архитектура CPU
+          # 2. Архитектура
           case "${TGT}/${SUB}" in
             "mediatek/filogic"|"mediatek/mt7622"|\
             "qualcommax/ipq807x"|"qualcommax/ipq60xx"|"qualcommax/ipq50xx"|\
@@ -164,26 +145,36 @@ jobs:
             *)
               ARCH_DIR="aarch64_cortex-a53" ;;
           esac
-          echo "[Инфо] target/subtarget: ${TGT}/${SUB} → arch: $ARCH_DIR"
+          echo "[Инфо] arch: $ARCH_DIR"
 
-          # 3. Формируем URL фида
+          # 3. URL фида
           FEED_URL="https://raw.githubusercontent.com/vladmir1981/custom-packages-repo/main/${FEED_BRANCH}/${ARCH_DIR}"
 
-          # 4. Проверяем доступность индекса
+          # 4. Проверка индекса
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${FEED_URL}/${INDEX_FILE}" || echo "000")
           echo "[Инфо] Проверка ${FEED_URL}/${INDEX_FILE} → HTTP $HTTP_CODE"
-
           if [ "$HTTP_CODE" != "200" ]; then
-            echo "⚠ Фид недоступен (HTTP $HTTP_CODE). Прошивка соберётся без кастомных пакетов."
+            echo "⚠ Фид недоступен, продолжаем без пакетов"
             exit 0
           fi
 
-          # 5. Подключаем фид в repositories.conf
-          echo "✔ Фид доступен: ${FEED_URL}/${INDEX_FILE}"
-          echo "src custom ${FEED_URL}" >> repositories.conf
+          # 5. Для APK (25.12): ключ + URL в repositories.conf БЕЗ "src custom"
+          if [ "$IS_APK" = "1" ]; then
+            KEY_URL="https://raw.githubusercontent.com/vladmir1981/custom-packages-repo/main/zapret2-1andrevich.pub"
+            echo "[Инфо] Скачиваем ключ: $KEY_URL"
+            sudo mkdir -p /etc/apk/keys
+            sudo curl -sL "$KEY_URL" -o /etc/apk/keys/zapret2-1andrevich.pub
+            sudo chmod 644 /etc/apk/keys/zapret2-1andrevich.pub
+            echo "[Инфо] Ключ установлен:"
+            sudo ls -la /etc/apk/keys/
+            sudo head -c 60 /etc/apk/keys/zapret2-1andrevich.pub || true
+            echo ""
 
-          # 6. Для opkg (23.05/24.10) — отключаем проверку подписи
-          if [[ "$FEED_BRANCH" != "25.12" ]]; then
+            # ВАЖНО: для apk пишем просто URL, БЕЗ "src custom"
+            echo "${FEED_URL}" >> repositories.conf
+          else
+            # Для opkg пишем "src custom" и убираем check_signature
+            echo "src custom ${FEED_URL}" >> repositories.conf
             grep -v "check_signature" repositories.conf > /tmp/repos.tmp || true
             mv /tmp/repos.tmp repositories.conf
           fi
