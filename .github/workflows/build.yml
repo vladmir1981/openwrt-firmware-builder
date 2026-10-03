@@ -102,9 +102,6 @@ jobs:
                           best_match = p; break
           if not best_match:
               best_match = requested
-              print(f"⚠️ Используем: {best_match}")
-          else:
-              print(f"🎉 Профиль: {best_match}")
           with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
               f.write(f"REAL_PROFILE={best_match}\n")
 
@@ -117,7 +114,6 @@ jobs:
         run: |
           set -e
 
-          # 1. Ветка и тип индекса
           if [[ "$VER" == 23.05* ]]; then
             FEED_BRANCH="23.05"; INDEX_FILE="Packages.gz"; IS_APK=0
           elif [[ "$VER" == 24.10* ]]; then
@@ -129,7 +125,6 @@ jobs:
           fi
           echo "[Инфо] Версия: $VER → ветка: $FEED_BRANCH, apk=$IS_APK"
 
-          # 2. Архитектура
           case "${TGT}/${SUB}" in
             "mediatek/filogic"|"mediatek/mt7622"|\
             "qualcommax/ipq807x"|"qualcommax/ipq60xx"|"qualcommax/ipq50xx"|\
@@ -147,40 +142,62 @@ jobs:
           esac
           echo "[Инфо] arch: $ARCH_DIR"
 
-          # 3. URL фида
           FEED_URL="https://raw.githubusercontent.com/vladmir1981/custom-packages-repo/main/${FEED_BRANCH}/${ARCH_DIR}"
 
-          # 4. Проверка индекса
           HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${FEED_URL}/${INDEX_FILE}" || echo "000")
           echo "[Инфо] Проверка ${FEED_URL}/${INDEX_FILE} → HTTP $HTTP_CODE"
           if [ "$HTTP_CODE" != "200" ]; then
-            echo "⚠ Фид недоступен, продолжаем без пакетов"
+            echo "⚠ Фид недоступен"
             exit 0
           fi
 
-          # 5. Для APK (25.12): ключ + URL в repositories.conf БЕЗ "src custom"
           if [ "$IS_APK" = "1" ]; then
             KEY_URL="https://raw.githubusercontent.com/vladmir1981/custom-packages-repo/main/zapret2-1andrevich.pub"
-            echo "[Инфо] Скачиваем ключ: $KEY_URL"
             sudo mkdir -p /etc/apk/keys
             sudo curl -sL "$KEY_URL" -o /etc/apk/keys/zapret2-1andrevich.pub
             sudo chmod 644 /etc/apk/keys/zapret2-1andrevich.pub
-            echo "[Инфо] Ключ установлен:"
+            echo "[Инфо] Ключ:"
             sudo ls -la /etc/apk/keys/
-            sudo head -c 60 /etc/apk/keys/zapret2-1andrevich.pub || true
-            echo ""
-
-            # ВАЖНО: для apk пишем просто URL, БЕЗ "src custom"
             echo "${FEED_URL}" >> repositories.conf
           else
-            # Для opkg пишем "src custom" и убираем check_signature
             echo "src custom ${FEED_URL}" >> repositories.conf
             grep -v "check_signature" repositories.conf > /tmp/repos.tmp || true
             mv /tmp/repos.tmp repositories.conf
           fi
 
-          echo "=== Итоговый repositories.conf ==="
+          echo "=== repositories.conf ==="
           cat repositories.conf
+
+      - name: Diagnose IB for APK
+        working-directory: openwrt-ib
+        if: always()
+        run: |
+          echo "=== IB root ==="
+          ls -la | head -40
+          echo ""
+          echo "=== keys/ (в IB) ==="
+          ls -la keys/ 2>/dev/null || echo "(нет keys/)"
+          echo ""
+          echo "=== repositories.conf ==="
+          cat repositories.conf 2>/dev/null || echo "(нет)"
+          echo ""
+          echo "=== repositories ==="
+          cat repositories 2>/dev/null || echo "(нет)"
+          echo ""
+          echo "=== любые *apk* в IB ==="
+          find . -maxdepth 3 -iname "*apk*" 2>/dev/null | head -20
+          echo ""
+          echo "=== /etc/apk/ ==="
+          ls -la /etc/apk/ 2>/dev/null || echo "(нет)"
+          echo ""
+          echo "=== /etc/apk/repositories ==="
+          cat /etc/apk/repositories 2>/dev/null || echo "(нет)"
+          echo ""
+          echo "=== /etc/apk/keys/ ==="
+          ls -la /etc/apk/keys/ 2>/dev/null || echo "(нет)"
+          echo ""
+          echo "=== файлы в IB с 'downloads.openwrt.org' ==="
+          grep -rl "downloads.openwrt.org" . 2>/dev/null | head -10
 
       - name: Run Firmware Compilation
         working-directory: openwrt-ib
