@@ -152,52 +152,32 @@ jobs:
           fi
 
           if [ "$IS_APK" = "1" ]; then
+            # Ключ подписи zapret2
             KEY_URL="https://raw.githubusercontent.com/vladmir1981/custom-packages-repo/main/zapret2-1andrevich.pub"
             sudo mkdir -p /etc/apk/keys
             sudo curl -sL "$KEY_URL" -o /etc/apk/keys/zapret2-1andrevich.pub
             sudo chmod 644 /etc/apk/keys/zapret2-1andrevich.pub
-            echo "[Инфо] Ключ:"
-            sudo ls -la /etc/apk/keys/
-            echo "${FEED_URL}" >> repositories.conf
+
+            # Копия ключа в IB
+            cp /etc/apk/keys/zapret2-1andrevich.pub keys/ 2>/dev/null || true
+
+            echo "[Инфо] Ключ в /etc/apk/keys/:"
+            ls -la /etc/apk/keys/
+            echo "[Инфо] Ключ в openwrt-ib/keys/:"
+            ls -la keys/
+
+            # ВАЖНО для 25.12: пишем URL в файл "repositories" (без .conf)
+            echo "${FEED_URL}" >> repositories
+
+            echo "=== Итоговый repositories ==="
+            cat repositories
           else
             echo "src custom ${FEED_URL}" >> repositories.conf
             grep -v "check_signature" repositories.conf > /tmp/repos.tmp || true
             mv /tmp/repos.tmp repositories.conf
+            echo "=== Итоговый repositories.conf ==="
+            cat repositories.conf
           fi
-
-          echo "=== repositories.conf ==="
-          cat repositories.conf
-
-      - name: Diagnose IB for APK
-        working-directory: openwrt-ib
-        if: always()
-        run: |
-          echo "=== IB root ==="
-          ls -la | head -40
-          echo ""
-          echo "=== keys/ (в IB) ==="
-          ls -la keys/ 2>/dev/null || echo "(нет keys/)"
-          echo ""
-          echo "=== repositories.conf ==="
-          cat repositories.conf 2>/dev/null || echo "(нет)"
-          echo ""
-          echo "=== repositories ==="
-          cat repositories 2>/dev/null || echo "(нет)"
-          echo ""
-          echo "=== любые *apk* в IB ==="
-          find . -maxdepth 3 -iname "*apk*" 2>/dev/null | head -20
-          echo ""
-          echo "=== /etc/apk/ ==="
-          ls -la /etc/apk/ 2>/dev/null || echo "(нет)"
-          echo ""
-          echo "=== /etc/apk/repositories ==="
-          cat /etc/apk/repositories 2>/dev/null || echo "(нет)"
-          echo ""
-          echo "=== /etc/apk/keys/ ==="
-          ls -la /etc/apk/keys/ 2>/dev/null || echo "(нет)"
-          echo ""
-          echo "=== файлы в IB с 'downloads.openwrt.org' ==="
-          grep -rl "downloads.openwrt.org" . 2>/dev/null | head -10
 
       - name: Run Firmware Compilation
         working-directory: openwrt-ib
